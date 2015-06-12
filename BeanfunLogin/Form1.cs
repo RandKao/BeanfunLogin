@@ -272,7 +272,7 @@ namespace BeanfunLogin
                         continue;
                     }
                     Debug.WriteLine(this.bfClient.Ping());
-                    System.Threading.Thread.Sleep(1000 * 60 * 10);
+                    System.Threading.Thread.Sleep(1000 * 60 * 3);
                 }
                 catch
                 { return; }
