@@ -85,14 +85,12 @@
             this.keepLogged.AutoSize = true;
             this.keepLogged.Checked = global::BeanfunLogin.Properties.Settings.Default.keepLogged;
             this.keepLogged.DataBindings.Add(new System.Windows.Forms.Binding("Checked", global::BeanfunLogin.Properties.Settings.Default, "keepLogged", true, System.Windows.Forms.DataSourceUpdateMode.OnPropertyChanged));
-            this.keepLogged.Enabled = false;
             this.keepLogged.Location = new System.Drawing.Point(130, 24);
             this.keepLogged.Name = "keepLogged";
             this.keepLogged.Size = new System.Drawing.Size(75, 20);
             this.keepLogged.TabIndex = 8;
             this.keepLogged.Text = "保持登入";
             this.keepLogged.UseVisualStyleBackColor = true;
-            this.keepLogged.Visible = false;
             this.keepLogged.CheckedChanged += new System.EventHandler(this.keepLogged_CheckedChanged);
             // 
             // button3

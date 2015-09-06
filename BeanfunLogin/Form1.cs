@@ -275,7 +275,7 @@ namespace BeanfunLogin
                     System.Threading.Thread.Sleep(1000 * 60 * 3);
                 }
                 catch
-                { return; }
+                {  }
             }
         }
 
@@ -297,8 +297,8 @@ namespace BeanfunLogin
         private void SetGamePath_ToolStripMenuItem1_Click(object sender, EventArgs e)
         {
             OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "新楓之谷主程式 (MapleStory.exe)|MapleStory.exe|All files (*.*)|*.*";
-            openFileDialog.Title = "Set MapleStory.exe Path.";
+            openFileDialog.Filter = "新楓之谷主程式 (MapleStory.exe)|MapleStory.exe|新瑪奇主程式 (Mabinogi.exe)|Mabinogi.exe|All files (*.*)|*.*";
+            openFileDialog.Title = "Set MapleStory.exe or Mabinogi.exe Path.";
             openFileDialog.InitialDirectory = Properties.Settings.Default.gamePath;
 
             if (openFileDialog.ShowDialog() == DialogResult.OK)

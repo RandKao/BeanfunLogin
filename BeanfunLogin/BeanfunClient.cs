@@ -90,7 +90,7 @@ namespace BeanfunLogin
         public string Ping()
         {
             DownloadString("https://tw.beanfun.com");
-            return "";
+            return "Ping Beanfun";
         }
 
 

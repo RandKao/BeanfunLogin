@@ -110,7 +110,24 @@ namespace BeanfunLogin
                 
                 try
                 {
-                    Process.Start(Properties.Settings.Default.gamePath, "tw.login.maplestory.gamania.com 8484 BeanFun " + this.bfClient.accountList[index].sacc + " " + this.otp);
+                    switch (this.service_region)
+                    {
+                        case "A2":
+                            ProcessStartInfo Process_Mabi_Info = new ProcessStartInfo();
+                            Process_Mabi_Info.FileName = Properties.Settings.Default.gamePath;
+                            Process_Mabi_Info.Arguments =  "/T:gamania"+" /N:" + this.bfClient.accountList[index].sacc + " /V:" + this.otp;
+                            Process_Mabi_Info.WorkingDirectory = System.IO.Path.GetDirectoryName(Properties.Settings.Default.gamePath);
+	                        Process Process_Mabi = new Process();
+	                        Process_Mabi.StartInfo = Process_Mabi_Info;
+	                        Process_Mabi.Start();
+                            break;
+                        case "T9":
+                            Process.Start(Properties.Settings.Default.gamePath, "tw.login.maplestory.gamania.com 8484 BeanFun " + this.bfClient.accountList[index].sacc + " " + this.otp);
+                            break;
+                        default:
+                            break;
+                    }
+
                 }
                 catch
                 {
