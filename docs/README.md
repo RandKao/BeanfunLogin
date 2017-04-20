@@ -1,10 +1,12 @@
 ﻿## 新楓之谷Beanfun登入器
 
-[**程式下載**](../../raw/master/BeanfunLogin.rar) - Version 1.6.5
+[**程式下載**](../../raw/master/BeanfunLogin.rar) - Version 1.10.0
 
 此版本更新
-* 動態讀取遊戲列表
-* 修正Beanfun login更新 (未測試)
+* 新增 QR Code 登入方式
+* 移除不再支援的登入方式
+* 修正部份錯誤
+* 自動輸入密碼
 
 ### 目錄
 * [程式介紹](#程式介紹)

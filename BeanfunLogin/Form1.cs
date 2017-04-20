@@ -16,22 +16,51 @@ using System.IO;
 using Utility.ModifyRegistry;
 using Microsoft.Win32;
 using System.Diagnostics;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Threading;
+using CSharpAnalytics;
 
 namespace BeanfunLogin
 {
+    enum LoginMethod : int {
+        Regular = 0,
+        Keypasco = 1,
+        PlaySafe = 2,
+        QRCode = 3
+    };
+
     public partial class main : Form
     {
+        private AccountManager accountManager = null;
+
         public BeanfunClient bfClient;
 
         public BeanfunClient.GamaotpClass gamaotpClass;
+        public BeanfunClient.QRCodeClass qrcodeClass;
 
         private string service_code = "610074" , service_region = "T9";
 
+        public List<GameService> gameList = new List<GameService>();
+
+        private CSharpAnalytics.Activities.AutoTimedEventActivity timedActivity = null;
+
         public main()
         {
+            AutoMeasurement.Instance = new WinFormAutoMeasurement();
+            AutoMeasurement.DebugWriter = d => Debug.WriteLine(d);
+            AutoMeasurement.Start(new MeasurementConfiguration("UA-75983216-4"));
+
+            timedActivity = new CSharpAnalytics.Activities.AutoTimedEventActivity("FormLoad", Properties.Settings.Default.loginMethod.ToString());
             InitializeComponent();
             init();
             CheckForUpdate();
+
+            if (this.timedActivity != null)
+            {
+                AutoMeasurement.Client.Track(this.timedActivity);
+                this.timedActivity = null;
+            }
         }
 
         public void ShowToolTip(IWin32Window ui, string title, string des, int iniDelay = 2000, bool repeat = false)
@@ -52,6 +81,9 @@ namespace BeanfunLogin
 
         public bool errexit(string msg, int method, string title = null)
         {
+            string originalMsg = msg;
+            AutoMeasurement.Client.TrackException(msg);
+
             switch (msg)
             {
                 case "LoginNoResponse":
@@ -78,11 +110,11 @@ namespace BeanfunLogin
                     method = 0;
                     break;
                 case "OTPNoLongPollingKey":
-                    if (Properties.Settings.Default.loginMethod == 5)
+                    if (Properties.Settings.Default.loginMethod == (int)LoginMethod.PlaySafe)
                         msg = "密碼獲取失敗，請檢查晶片卡是否插入讀卡機，且讀卡機運作正常。\n若仍出現此訊息，請嘗試重新登入。";
                     else
                     {
-                        msg = "密碼獲取失敗，請嘗試重新登入。";
+                        msg = "已從伺服器斷線，請重新登入。";
                         method = 1;
                     }
                     break;
@@ -115,15 +147,18 @@ namespace BeanfunLogin
             {
                 BackToLogin();
             }
+
             return false;
         }
 
         public void BackToLogin()
         {
+            this.Size = new System.Drawing.Size(459, 290);
             panel1.SendToBack();
             panel2.BringToFront();
             Properties.Settings.Default.autoLogin = false;
             init();
+            
         }
 
         public bool init()
@@ -131,31 +166,44 @@ namespace BeanfunLogin
             try
             {
                 this.Text = "BeanfunLogin - v" + Properties.Settings.Default.currentVersion.ToString().Insert(1, ".").Insert(3, ".");
-                this.AcceptButton = this.button1;
+                this.AcceptButton = this.loginButton;
                 this.bfClient = null;
+                this.accountManager = new AccountManager();
+
+                bool res = accountManager.init();
+                if (res == false)
+                    errexit("帳號記錄初始化失敗，未知的錯誤。", 0);
+                refreshAccountList();
                 //Properties.Settings.Default.Reset(); //SetToDefault.                  
 
                 // Handle settings.
                 if (Properties.Settings.Default.rememberAccount == true)
-                    this.textBox1.Text = Properties.Settings.Default.AccountID;
-                if (Properties.Settings.Default.rememberPwd == true && Properties.Settings.Default.loginMethod != 2)
+                    this.accountInput.Text = Properties.Settings.Default.AccountID;
+                if (Properties.Settings.Default.rememberPwd == true)
                 {
-                    this.checkBox1.Enabled = false;
+                    this.rememberAccount.Enabled = false;
                     // Load password.
                     if (File.Exists("UserState.dat"))
                     {
-                        Byte[] cipher = File.ReadAllBytes("UserState.dat");
-                        string entropy = Properties.Settings.Default.entropy;
-                        byte[] plaintext = ProtectedData.Unprotect(cipher, Encoding.UTF8.GetBytes(entropy), DataProtectionScope.CurrentUser);
-                        this.textBox2.Text = System.Text.Encoding.UTF8.GetString(plaintext);
+                        try
+                        {
+                            Byte[] cipher = File.ReadAllBytes("UserState.dat");
+                            string entropy = Properties.Settings.Default.entropy;
+                            byte[] plaintext = ProtectedData.Unprotect(cipher, Encoding.UTF8.GetBytes(entropy), DataProtectionScope.CurrentUser);
+                            this.passwdInput.Text = System.Text.Encoding.UTF8.GetString(plaintext);
+                        }
+                        catch
+                        {
+                            File.Delete("UserState.dat");
+                        }
                     }
                 }
-                if (Properties.Settings.Default.autoLogin == true && Properties.Settings.Default.loginMethod != 2 && Properties.Settings.Default.loginMethod != 4)
+                if (Properties.Settings.Default.autoLogin == true)
                 {
                     this.UseWaitCursor = true;
                     this.panel2.Enabled = false;
-                    this.button1.Text = "請稍後...";
-                    this.backgroundWorker2.RunWorkerAsync(Properties.Settings.Default.loginMethod);
+                    this.loginButton.Text = "請稍後...";
+                    this.loginWorker.RunWorkerAsync(Properties.Settings.Default.loginMethod);
                 }
                 if (Properties.Settings.Default.gamePath == "")
                 {
@@ -166,21 +214,37 @@ namespace BeanfunLogin
                         Properties.Settings.Default.gamePath = myRegistry.Read("Path");
                 }
 
-                this.comboBox1.SelectedIndex = Properties.Settings.Default.loginMethod;
-                this.comboBox2.SelectedIndex = Properties.Settings.Default.loginGame;
+                this.loginMethodInput.SelectedIndex = Properties.Settings.Default.loginMethod;
                 this.textBox3.Text = "";
 
-                if (this.textBox1.Text == "")
-                    this.ActiveControl = this.textBox1;
-                else if (this.textBox2.Text == "")
-                    this.ActiveControl = this.textBox2;
+                if (this.accountInput.Text == "")
+                    this.ActiveControl = this.accountInput;
+                else if (this.passwdInput.Text == "")
+                    this.ActiveControl = this.passwdInput;
 
                 // .NET textbox full mode bug.
-                this.textBox1.ImeMode = ImeMode.OnHalf;
-                this.textBox2.ImeMode = ImeMode.OnHalf;
+                this.accountInput.ImeMode = ImeMode.OnHalf;
+                this.passwdInput.ImeMode = ImeMode.OnHalf;
                 return true;
             }
-            catch { return errexit("初始化失敗，未知的錯誤。", 0); }
+            catch (Exception e)
+            { 
+                return errexit("初始化失敗，未知的錯誤。" + e.Message, 0); 
+            }
+        }
+
+        public class GameService
+        {
+            public string name { get; set; }
+            public string service_code { get; set; }
+            public string service_region { get; set; }
+
+            public GameService(string name, string service_code, string service_region)
+            {
+                this.name = name;
+                this.service_code = service_code;
+                this.service_region = service_region;
+            }
         }
 
         public void CheckForUpdate()
@@ -188,6 +252,22 @@ namespace BeanfunLogin
             try
             {
                 WebClient wc = new WebClient();
+                string res = Encoding.UTF8.GetString(wc.DownloadData("http://tw.beanfun.com/game_zone/"));
+                Regex reg = new Regex("Services.ServiceList = (.*);");
+                if (reg.IsMatch(res))
+                {
+                    string json = reg.Match(res).Groups[1].Value;
+                    JObject o = JObject.Parse(json);
+                    foreach (var game in o["Rows"])
+                    {
+                        Debug.Write(game["serviceCode"]);
+                        this.comboBox2.Items.Add((string)game["ServiceFamilyName"]);
+                        gameList.Add(new GameService((string)game["ServiceFamilyName"], (string)game["ServiceCode"], (string)game["ServiceRegion"]));
+                    }
+                }
+
+                this.comboBox2.SelectedIndex = Properties.Settings.Default.loginGame;
+
                 string response = wc.DownloadString("https://raw.githubusercontent.com/kevin940726/BeanfunLogin/master/zh-TW.md");
                 Regex regex = new Regex("Version (\\d\\.\\d\\.\\d)");
                 if (!regex.IsMatch(response))
@@ -208,14 +288,26 @@ namespace BeanfunLogin
             catch { return; }
         }
 
-        // The login botton.
-        private void button1_Click(object sender, EventArgs e)
+        private void refreshAccountList()
         {
-            if (this.ping.IsBusy)
-                this.ping.CancelAsync();
-            if (this.checkBox1.Checked == true)
-                Properties.Settings.Default.AccountID = this.textBox1.Text;
-            if (this.checkBox2.Checked == true)
+            string[] accArray = accountManager.getAccountList();
+            accounts.Items.Clear();
+            accounts.Items.AddRange(accArray);
+        }
+
+        // The login botton.
+        private void loginButton_Click(object sender, EventArgs e)
+        {
+
+            foreach (ListViewItem item in listView1.Items)
+                item.BackColor = DefaultBackColor;
+            if (this.pingWorker.IsBusy)
+            {
+                this.pingWorker.CancelAsync();
+            }
+            if (this.rememberAccount.Checked == true)
+                Properties.Settings.Default.AccountID = this.accountInput.Text;
+            if (this.rememberAccPwd.Checked == true)
             {
                 using (BinaryWriter writer = new BinaryWriter(File.Open("UserState.dat", FileMode.Create)))
                 {
@@ -225,7 +317,7 @@ namespace BeanfunLogin
                     string entropy = new string(Enumerable.Repeat(chars, 8).Select(s => s[random.Next(s.Length)]).ToArray());
 
                     Properties.Settings.Default.entropy = entropy;
-                    writer.Write(ciphertext(this.textBox2.Text, entropy));
+                    writer.Write(ciphertext(this.passwdInput.Text, entropy));
                 }
             }
             else
@@ -235,18 +327,23 @@ namespace BeanfunLogin
             }
             Properties.Settings.Default.Save();
 
+
             this.UseWaitCursor = true;
             this.panel2.Enabled = false;
-            this.button1.Text = "請稍後...";
-            this.backgroundWorker2.RunWorkerAsync(Properties.Settings.Default.loginMethod);
+
+            this.loginButton.Text = "請稍後...";
+            timedActivity = new CSharpAnalytics.Activities.AutoTimedEventActivity("Login", Properties.Settings.Default.loginMethod.ToString());
+            this.loginWorker.RunWorkerAsync(Properties.Settings.Default.loginMethod);
         }    
 
         // The get OTP button.
-        private void button3_Click(object sender, EventArgs e)
+        private void getOtpButton_Click(object sender, EventArgs e)
         {
-            if (this.ping.IsBusy)
-                this.ping.CancelAsync();
-            if (listView1.SelectedItems.Count <= 0 || this.backgroundWorker2.IsBusy) return;
+            if (this.pingWorker.IsBusy)
+            {
+                this.pingWorker.CancelAsync();
+            }
+            if (listView1.SelectedItems.Count <= 0 || this.loginWorker.IsBusy) return;
             if (Properties.Settings.Default.autoSelect == true)
             {
                 Properties.Settings.Default.autoSelectIndex = listView1.SelectedItems[0].Index;
@@ -255,28 +352,9 @@ namespace BeanfunLogin
 
             this.textBox3.Text = "獲取密碼中...";
             this.listView1.Enabled = false;
-            this.button3.Enabled = false;
-            this.backgroundWorker1.RunWorkerAsync(listView1.SelectedItems[0].Index);
-        }
-
-        // Ping to Beanfun website.
-        private void ping_DoWork(object sender, DoWorkEventArgs e)
-        {
-            while (!this.ping.CancellationPending && Properties.Settings.Default.keepLogged)
-            { 
-                try
-                {
-                    if (this.backgroundWorker1.IsBusy)
-                    {
-                        System.Threading.Thread.Sleep(1000 * 1);
-                        continue;
-                    }
-                    Debug.WriteLine(this.bfClient.Ping());
-                    System.Threading.Thread.Sleep(1000 * 60 * 10);
-                }
-                catch
-                { return; }
-            }
+            this.getOtpButton.Enabled = false;
+            timedActivity = new CSharpAnalytics.Activities.AutoTimedEventActivity("GetOTP", Properties.Settings.Default.loginMethod.ToString());
+            this.getOtpWorker.RunWorkerAsync(listView1.SelectedItems[0].Index);
         }
 
         // Building ciphertext by 3DES.
@@ -306,6 +384,8 @@ namespace BeanfunLogin
                 string file = openFileDialog.FileName;
                 Properties.Settings.Default.gamePath = file;
             }
+
+            AutoMeasurement.Client.TrackEvent("set game path", "set game path");
         }
 
         private void checkBox3_CheckedChanged(object sender, EventArgs e)
@@ -313,33 +393,37 @@ namespace BeanfunLogin
             if (this.checkBox3.Checked == true)
             {
                 Properties.Settings.Default.autoLogin = true;
-                this.checkBox1.Checked = true;
-                this.checkBox2.Checked = true;
-                this.checkBox1.Enabled = false;
-                this.checkBox2.Enabled = false;
+                this.rememberAccount.Checked = true;
+                this.rememberAccPwd.Checked = true;
+                this.rememberAccount.Enabled = false;
+                this.rememberAccPwd.Enabled = false;
             }
             else
             {
                 Properties.Settings.Default.autoLogin = false;
-                this.checkBox1.Enabled = true;
-                this.checkBox2.Enabled = true;
+                this.rememberAccount.Enabled = true;
+                this.rememberAccPwd.Enabled = true;
             }
+
+            AutoMeasurement.Client.TrackEvent(this.checkBox3.Checked ? "autoLoginOn" : "autoLoginOff", "loginCheckbox");
         }
 
         private void checkBox2_CheckedChanged(object sender, EventArgs e)
         {
-            if (this.checkBox2.Checked == true)
+            if (this.rememberAccPwd.Checked == true)
             {
                 Properties.Settings.Default.rememberPwd = true;
-                this.checkBox1.Checked = true;
-                this.checkBox2.Checked = true;
-                this.checkBox1.Enabled = false;
+                this.rememberAccount.Checked = true;
+                this.rememberAccPwd.Checked = true;
+                this.rememberAccount.Enabled = false;
             }
             else
             {
                 Properties.Settings.Default.rememberPwd = false;
-                this.checkBox1.Enabled = true;
+                this.rememberAccount.Enabled = true;
             }
+
+            AutoMeasurement.Client.TrackEvent(this.rememberAccPwd.Checked ? "rememberPwdOn" : "rememberPwdOff", "rememberPwdCheckbox");
         }
 
         private void checkBox4_CheckedChanged(object sender, EventArgs e)
@@ -355,6 +439,8 @@ namespace BeanfunLogin
                     Properties.Settings.Default.autoSelect = false;
             }
             Properties.Settings.Default.Save();
+
+            AutoMeasurement.Client.TrackEvent(this.checkBox4.Checked ? "autoSelectOn" : "autoSelectOff", "autoSelectCheckbox");
         }
 
         private void textBox3_OnClick(object sender, EventArgs e)
@@ -374,187 +460,167 @@ namespace BeanfunLogin
         private void listView1_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (listView1.SelectedItems.Count == 1)
-                this.button3.Text = "獲取密碼";
+                this.getOtpButton.Text = "獲取密碼";
         }
 
+        // login method changed event
         private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
         {
-            Properties.Settings.Default.loginMethod = this.comboBox1.SelectedIndex;
-            if (Properties.Settings.Default.loginMethod == 4)
+            qrCheckLogin.Enabled = false;
+
+            accountInput.Visible = true;
+            accountLabel.Visible = true;
+
+            passLabel.Visible = true;
+            passwdInput.Visible = true;
+
+            extraCodeInput.Visible = false;
+            gamaotp_label.Visible = false;
+            secPassLabel.Visible = false;
+
+            qrcodeImg.Visible = false;
+
+            rememberAccount.Visible = true;
+            rememberAccPwd.Visible = true;
+            checkBox3.Visible = true;
+            loginButton.Visible = true;
+
+            wait_qrWorker_notify.Visible = false;
+
+            this.gamaotp_challenge_code_output.Text = "";
+
+            Properties.Settings.Default.loginMethod = this.loginMethodInput.SelectedIndex;
+
+            if (Properties.Settings.Default.loginMethod == (int)LoginMethod.PlaySafe)
             {
-                this.checkBox1.Location = new Point(49, 155);
-                this.checkBox2.Location = new Point(165, 155);
-                this.label4.Visible = true;
-                this.textBox4.Visible = true;
+                this.passLabel.Text = "PIN碼";
+            }
+            else if (Properties.Settings.Default.loginMethod == (int)LoginMethod.QRCode)
+            {
+                accountInput.Visible = false;
+                accountLabel.Visible = false;
+
+                passLabel.Visible = false;
+                passwdInput.Visible = false;
+
+                qrcodeImg.Visible = true;
+
+                rememberAccount.Visible = false;
+                rememberAccPwd.Visible = false;
+                checkBox3.Visible = false;
+                loginButton.Visible = false;
+                qrcodeImg.Image = null;
+                wait_qrWorker_notify.Text = "取得QRCode中 請稍後";
+                wait_qrWorker_notify.Visible = true;
+
+                this.qrWorker.RunWorkerAsync(null);
+                this.loginMethodInput.Enabled = false;
             }
             else
             {
-                this.checkBox1.Location = new Point(107, 127);
-                this.checkBox2.Location = new Point(107, 155);
-                this.label4.Visible = false;
-                this.textBox4.Visible = false;
-            }
-            if (Properties.Settings.Default.loginMethod == 2)
-            {
-                this.label3.Text = "安全密碼";
-                this.bfClient = new BeanfunClient();
-                this.gamaotpClass = this.bfClient.GetGamaotpPassCode(this.bfClient.GetSessionkey());
-                if (this.bfClient.errmsg != null)
-                    errexit(this.bfClient.errmsg, 2);
-                else
-                    errexit("通行密碼： " + this.gamaotpClass.motp, 2, "GAMAOTP");
-            }         
-            else if (Properties.Settings.Default.loginMethod == 3)
-            {
-                this.label3.Text = "安全密碼";
-            }
-            else if (Properties.Settings.Default.loginMethod == 5)
-            {
-                this.label3.Text = "PIN碼";
-            }
-            else
-            {
-                this.label3.Text = "密碼";
+                this.passLabel.Text = "密碼";
             }
         }
 
         private void keepLogged_CheckedChanged(object sender, EventArgs e)
         {
             if (keepLogged.Checked)
-                if (!this.ping.IsBusy)
-                    this.ping.RunWorkerAsync();
+                if (!this.pingWorker.IsBusy)
+                    this.pingWorker.RunWorkerAsync();
             else
-                if (this.ping.IsBusy)
-                    this.ping.CancelAsync();
+                    if (this.pingWorker.IsBusy)
+                    {
+                        this.pingWorker.CancelAsync();
+                    }
             Properties.Settings.Default.Save();
         }
 
         private void comboBox2_SelectedIndexChanged(object sender, EventArgs e)
         {
-            switch (this.comboBox2.SelectedItem.ToString())
-            {
-                case "新楓之谷":
-                    service_code = "610074";
-                    service_region = "T9";
-                    break;
-                case "天堂":
-                    service_code = "600035";
-                    service_region = "T7";
-                    break;
-                case "天堂。健康伺服器":
-                    service_code = "600037";
-                    service_region = "T7";
-                    break;
-                case "天堂。免費伺服器":
-                    service_code = "600041";
-                    service_region = "BE";
-                    break;
-                case "絕對武力 online":
-                    service_code = "610153";
-                    service_region = "TN";
-                    break;
-                case "夢幻之星ONLINE 2":
-                    service_code = "611187";
-                    service_region = "BC";
-                    break;
-                case "英雄三國(HOK)":
-                    service_code = "611413";
-                    service_region = "BJ";
-                    break;
-                case "跑跑卡丁車":
-                    service_code = "610096";
-                    service_region = "TE";
-                    break;
-                case "艾爾之光":
-                    service_code = "300148";
-                    service_region = "AF";
-                    break;
-                case "新瑪奇mabinogi":
-                    service_code = "600309";
-                    service_region = "A2";
-                    break;
-                case "蠟筆小新 Online":
-                    service_code = "611143";
-                    service_region = "B8";
-                    break;
-                case "C9第九大陸":
-                    service_code = "611154";
-                    service_region = "B9";
-                    break;
-                case "瑪奇英雄傳":
-                    service_code = "610670";
-                    service_region = "DX";
-                    break;
-                case "爆爆王":
-                    service_code = "610085";
-                    service_region = "TC";
-                    break;
-                case "泡泡大亂鬥":
-                    service_code = "610502";
-                    service_region = "DN";
-                    break;
-                case "楓之谷體驗伺服器":
-                    service_code = "610075";
-                    service_region = "T9";
-                    break;
-                case "火爆小鬥士":
-                    service_code = "610917";
-                    service_region = "EN";
-                    break;
-                case "夢境":
-                    service_code = "610648";
-                    service_region = "D7";
-                    break;
-                case "戲谷麻將":
-                    service_code = "610478";
-                    service_region = "AX";
-                    break;
-                case "戲谷大老二":
-                    service_code = "610481";
-                    service_region = "AX";
-                    break;
-                case "戲谷自摸":
-                    service_code = "610479";
-                    service_region = "AX";
-                    break;
-                case "戲谷十三支":
-                    service_code = "610482";
-                    service_region = "AX";
-                    break;
-                case "戲谷柏青哥":
-                    service_code = "610486";
-                    service_region = "AX";
-                    break;
-                case "戲谷真接龍":
-                    service_code = "610487";
-                    service_region = "AX";
-                    break;
-                case "戲谷跑馬風雲":
-                    service_code = "610478";
-                    service_region = "AX";
-                    break;
-                case "戲谷德州撲克":
-                    service_code = "610484";
-                    service_region = "AX";
-                    break;
-                case "戲谷夢幻滿貫":
-                    service_code = "610485";
-                    service_region = "AX";
-                    break;
-                case "戲谷暗棋":
-                    service_code = "610480";
-                    service_region = "AX";
-                    break;
-                default:
-                    service_code = "610074";
-                    service_region = "T9";
-                    break;
-            }
             Properties.Settings.Default.loginGame = this.comboBox2.SelectedIndex;
+            try
+            {
+                service_code = gameList[this.comboBox2.SelectedIndex].service_code;
+                service_region = gameList[this.comboBox2.SelectedIndex].service_region;
+            }
+            catch
+            {
+
+            }
+            
             //Properties.Settings.Default.Save();
+       }
+
+        private void delete_Click(object sender, EventArgs e)
+        {
+            ListBox.SelectedObjectCollection selectedItems = new ListBox.SelectedObjectCollection(accounts);
+            selectedItems = accounts.SelectedItems;
+
+            if (accounts.SelectedIndex != -1)
+            {
+                for (int i = selectedItems.Count - 1; i >= 0; i--)
+                {
+                    accountManager.removeAccount(accounts.GetItemText(selectedItems[i]));
+                    refreshAccountList();
+                }
+            }
+
+            AutoMeasurement.Client.TrackEvent("remove", "accountMananger");
         }
 
-        
+        private void import_Click(object sender, EventArgs e)
+        {
+            bool res = accountManager.addAccount(accountInput.Text, passwdInput.Text, loginMethodInput.SelectedIndex);
+            if (res == false)
+                errexit("帳號記錄新增失敗",0);
+            refreshAccountList();
+
+            AutoMeasurement.Client.TrackEvent("add", "accountMananger");
+        }
+
+        private void export_Click(object sender, EventArgs e)
+        {
+            if(accounts.SelectedIndex != -1)
+            {
+                string account = accounts.SelectedItem.ToString();
+                string passwd = accountManager.getPasswordByAccount(account);
+                int method = accountManager.getMethodByAccount(account);
+
+                if( passwd == null || method == -1 )
+                {
+                    errexit("帳號記錄讀取失敗。", 0);
+                }
+
+                accountInput.Text = account;
+                passwdInput.Text = passwd;
+                loginMethodInput.SelectedIndex = method;
+
+                AutoMeasurement.Client.TrackEvent("fill", "accountMananger");
+            }
+        }
+
+        private void autoPaste_CheckedChanged(object sender, EventArgs e)
+        {
+            AutoMeasurement.Client.TrackEvent(this.autoPaste.Checked ? "autoPasteOn" : "autoPasteOff", "autoPasteCheckbox");
+        }
+
+        private void rememberAccount_CheckedChanged(object sender, EventArgs e)
+        {
+            AutoMeasurement.Client.TrackEvent(this.rememberAccount.Checked ? "rememberAccountOn" : "rememberAccountOff", "rememberAccountCheckbox");
+        }
+
+        private void checkBox1_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.Save();
+
+            AutoMeasurement.Client.TrackEvent(this.checkBox1.Checked ? "autoLaunchOn" : "autoLaunchOff", "autoLaunchCheckbox");
+        }
+
+
+
+
+
+
 
     }
 }
